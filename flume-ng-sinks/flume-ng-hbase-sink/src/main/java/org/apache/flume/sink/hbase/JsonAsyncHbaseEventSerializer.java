@@ -32,9 +32,10 @@ import com.google.common.base.Charsets;
 
 import org.apache.commons.lang.ArrayUtils;
 
+import java.util.Arrays;
 import org.apache.hadoop.hbase.util.Bytes;
+import java.util.Random;
 import java.util.Map;
-import java.util.HashMap;
 import java.lang.reflect.Type;
 import java.nio.charset.UnsupportedCharsetException;
 import java.util.ArrayList;
@@ -101,67 +102,56 @@ public class JsonAsyncHbaseEventSerializer implements AsyncHbaseEventSerializer 
   public List<PutRequest> getActions() {
     List<PutRequest> actions = new ArrayList<PutRequest>();
     Map<String, String> pairs;
+    long now = System.currentTimeMillis();
+    long reverse_timestamp = Long.MAX_VALUE - now;
+
+
+    byte[] jsonData;
+    int start = 0;
+    int finish = payload.length;
+    for (int i = 0; i < payload.length; i++) {
+      if (payload[i] == '{') {
+        start = i;
+      } else if (payload[i] == '}') {
+        finish = i + 1;
+      }
+    }
+
+    jsonData = Arrays.copyOfRange(payload, start, finish);
+
     try {
-      pairs = gson.fromJson(new String(payload), listType);
+      pairs = gson.fromJson(new String(jsonData), listType);
     } catch (Exception e) {
-      LOG.error("failed to parse json: (" + payload + ")");
+      LOG.error("failed to parse json: (" + new String(jsonData) + ")");
       return actions;
     }
-    byte[] rowKey;
-    long now = System.currentTimeMillis();
-    try {
-      switch (keyType) {
-        case TS:
-          rowKey = SimpleRowKeyGenerator.getTimestampKey(rowPrefix);
-          break;
-        case TSNANO:
-          rowKey = SimpleRowKeyGenerator.getNanoTimestampKey(rowPrefix);
-          break;
-        case RANDOM:
-          rowKey = SimpleRowKeyGenerator.getRandomKey(rowPrefix);
-          break;
-        default:
-          rowKey = SimpleRowKeyGenerator.getUUIDKey(rowPrefix);
-          break;
+
+    Random randomGenerator = new Random();
+    String bucket = Integer.toString(randomGenerator.nextInt(8));
+    String eventType, userKey, rowKey;
+
+    if (pairs.containsKey("user_key")) {
+      userKey = pairs.get("user_key");
+      if (pairs.containsKey("event_type")) {
+        eventType = pairs.get("event_type");
+        rowKey = bucket + '-' + reverse_timestamp + '-' + eventType + '-' + userKey;
+      } else {
+        rowKey = bucket + '-' + reverse_timestamp + '-' + '1' + userKey;
       }
-    } catch (Exception e){
-      throw new FlumeException("Could not get row key!", e);
+    } else {
+      rowKey = bucket + '-' + reverse_timestamp + '-' + '1' + "-0000000000-0000000000";
     }
+
     for (Map.Entry<String, String> entry : pairs.entrySet()) {
-      PutRequest putRequest =  new PutRequest(table, rowKey, cf,
+      PutRequest putRequest =  new PutRequest(table,
+          Bytes.toBytes(rowKey),
+          cf,
           Bytes.toBytes(entry.getKey()),
           Bytes.toBytes(entry.getValue()),
           now
       );
       actions.add(putRequest);
     }
-//        pairs.keySet(), pairs.values());
-    /*
-    if(payloadColumn != null){
-      byte[] rowKey;
-      try {
-        switch (keyType) {
-          case TS:
-            rowKey = SimpleRowKeyGenerator.getTimestampKey(rowPrefix);
-            break;
-          case TSNANO:
-            rowKey = SimpleRowKeyGenerator.getNanoTimestampKey(rowPrefix);
-            break;
-          case RANDOM:
-            rowKey = SimpleRowKeyGenerator.getRandomKey(rowPrefix);
-            break;
-          default:
-            rowKey = SimpleRowKeyGenerator.getUUIDKey(rowPrefix);
-            break;
-        }
-        PutRequest putRequest =  new PutRequest(table, rowKey, cf,
-            payloadColumn, payload);
-        actions.add(putRequest);
-      } catch (Exception e){
-        throw new FlumeException("Could not get row key!", e);
-      }
-    }
-    */
     return actions;
   }
 
